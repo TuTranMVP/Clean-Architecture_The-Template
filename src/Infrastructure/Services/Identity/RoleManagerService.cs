@@ -115,7 +115,7 @@ public class RoleManagerService(IDbContext context) : IRoleManagerService
         );
 
         IEnumerable<UserClaim> userClaims = ProcessUserClaimUpdate(
-            currentRoleClaims,
+            claimsToUpdate,
             rolesClaimsToProcess
         );
 
@@ -124,7 +124,6 @@ public class RoleManagerService(IDbContext context) : IRoleManagerService
 
         //update
         roleClaimDbSet.UpdateRange(claimsToUpdate);
-        await context.SaveChangesAsync();
         userClaimDbSet.UpdateRange(userClaims);
         await context.SaveChangesAsync();
 
@@ -138,7 +137,6 @@ public class RoleManagerService(IDbContext context) : IRoleManagerService
             $"{role.Id}",
             await roleDbSet
                 .Include(x => x.RoleClaims)!
-                .ThenInclude(x => x.UserClaims)
                 .Include(x => x.UserRoles)
                 .AsSplitQuery()
                 .FirstOrDefaultAsync(x => x.Id == role.Id),
@@ -166,19 +164,16 @@ public class RoleManagerService(IDbContext context) : IRoleManagerService
         });
 
         // update new user claims for users who are in role
-        List<UserClaim> userClaims =
-        [
-            .. currentRole.UserRoles!.SelectMany(userRole =>
-                newRoleClaims.ConvertAll(roleClaim => new UserClaim()
-                {
-                    ClaimType = roleClaim.ClaimType,
-                    ClaimValue = roleClaim.ClaimValue,
-                    RoleClaimId = roleClaim.Id,
-                    UserId = userRole.UserId,
-                    Type = UserClaimType.Custom,
-                })
-            ),
-        ];
+        IEnumerable<UserClaim> userClaims = currentRole.UserRoles!.SelectMany(userRole =>
+            newRoleClaims.ConvertAll(roleClaim => new UserClaim()
+            {
+                ClaimType = roleClaim.ClaimType,
+                ClaimValue = roleClaim.ClaimValue,
+                RoleClaimId = roleClaim.Id,
+                UserId = userRole.UserId,
+                Type = UserClaimType.Custom,
+            })
+        );
 
         if (newRoleClaims.Count > 0)
         {
@@ -186,7 +181,7 @@ public class RoleManagerService(IDbContext context) : IRoleManagerService
             await context.SaveChangesAsync();
         }
 
-        if (userClaims.Count > 0)
+        if (userClaims.Any())
         {
             await userClaimDbSet.AddRangeAsync(userClaims);
             await context.SaveChangesAsync();
@@ -273,19 +268,17 @@ public class RoleManagerService(IDbContext context) : IRoleManagerService
         List<RoleClaim> rolesClaimsToProcess
     )
     {
-        foreach (RoleClaim claim in currentClaims)
+        foreach (RoleClaim roleClaim in currentClaims)
         {
-            RoleClaim? correspondedClaim = rolesClaimsToProcess.FirstOrDefault(x =>
-                x.Id == claim.Id
-            );
+            RoleClaim? correspondedClaim = rolesClaimsToProcess.Find(x => x.Id == roleClaim.Id);
 
             if (correspondedClaim == null)
             {
                 continue;
             }
 
-            claim.ClaimValue = correspondedClaim.ClaimValue;
-            List<UserClaim> updatedUserClaims = claim.UpdateUserClaim();
+            roleClaim.ClaimValue = correspondedClaim.ClaimValue;
+            List<UserClaim> updatedUserClaims = roleClaim.UpdateUserClaim();
 
             for (int i = 0; i < updatedUserClaims.Count; i++)
             {
@@ -294,13 +287,6 @@ public class RoleManagerService(IDbContext context) : IRoleManagerService
         }
     }
 
-    private async Task ClearAllClaimsAsync(Ulid roleId)
-    {
-        var claims = await roleClaimDbSet.Where(c => c.RoleId == roleId).ToListAsync();
-        if (claims.Count == 0)
-            return;
-
-        roleClaimDbSet.RemoveRange(claims);
-        await context.SaveChangesAsync();
-    }
+    private async Task ClearAllClaimsAsync(Ulid roleId) =>
+        await roleClaimDbSet.Where(c => c.RoleId == roleId).ExecuteDeleteAsync();
 }
